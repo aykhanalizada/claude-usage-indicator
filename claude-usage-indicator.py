@@ -153,16 +153,22 @@ def fmt_tokens(n):
     if n >= 1_000:     return f"{n/1_000:.1f}k"
     return str(n)
 
+def _round_to_minute(dt):
+    if dt.second >= 30:
+        dt += timedelta(minutes=1)
+    return dt.replace(second=0, microsecond=0)
+
 def fmt_reset(iso_str):
     if not iso_str:
         return ""
-    return datetime.fromisoformat(iso_str).astimezone().strftime('%H:%M')
+    dt = _round_to_minute(datetime.fromisoformat(iso_str).astimezone())
+    return dt.strftime('%H:%M')
 
 def fmt_reset_weekly(iso_str):
     if not iso_str:
         return ""
     days = ['B.e', 'Ç.a', 'Çər', 'C.a', 'Cüm', 'Şnb', 'Baz']
-    dt = datetime.fromisoformat(iso_str).astimezone()
+    dt = _round_to_minute(datetime.fromisoformat(iso_str).astimezone())
     return f"{days[dt.weekday()]} {dt.strftime('%d %H:%M')}"
 
 # ── Indicator ──────────────────────────────────────────────────────────────────
@@ -255,6 +261,9 @@ class ClaudeIndicator:
                 secs = retry_after % 60
                 time_str = f"{mins} dəq {secs} san" if secs else f"{mins} dəq"
                 self.session_item.set_label(f"⏳  Rate limit — {time_str} sonra yenilənəcək  [server: {raw_retry}s]")
+            elif e.code == 401:
+                self._next_interval = 300
+                self.session_item.set_label("🔒  Token etibarsızdır — terminalda `claude login` icra et")
             else:
                 self._next_interval = 300
                 self.session_item.set_label(f"HTTP xəta: {e.code}")
@@ -280,4 +289,7 @@ class ClaudeIndicator:
 
 if __name__ == '__main__':
     indicator = ClaudeIndicator()
-    Gtk.main()
+    try:
+        Gtk.main()
+    except KeyboardInterrupt:
+        pass
