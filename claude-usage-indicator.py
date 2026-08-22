@@ -10,7 +10,7 @@ except (ValueError, ImportError):
 import cairo
 from gi.repository import Gtk, GLib
 
-import json, os, math, glob, urllib.request, urllib.error
+import json, os, math, glob, subprocess, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 
 ICON_THEME_DIR = os.path.expanduser('~/.local/share/claude-indicator')
@@ -39,12 +39,28 @@ def save_cache(data):
 
 # ── API ────────────────────────────────────────────────────────────────────────
 
-def get_token():
-    with open(os.path.expanduser('~/.claude/.credentials.json')) as f:
-        return json.load(f)['claudeAiOauth']['accessToken']
+CREDENTIALS_FILE = os.path.expanduser('~/.claude/.credentials.json')
 
-def fetch_usage():
-    token = get_token()
+def _read_oauth():
+    with open(CREDENTIALS_FILE) as f:
+        return json.load(f)['claudeAiOauth']
+
+def _refresh_token():
+    # `claude` CLI özü refreshToken ilə accessToken-i yeniləyib .credentials.json-a yazır
+    try:
+        subprocess.run(['claude', 'auth', 'status'], capture_output=True, timeout=15)
+    except Exception:
+        pass
+
+def get_token():
+    oauth = _read_oauth()
+    expires_at = oauth.get('expiresAt')  # ms epoch
+    if expires_at and expires_at / 1000 - datetime.now(timezone.utc).timestamp() < 60:
+        _refresh_token()
+        oauth = _read_oauth()
+    return oauth['accessToken']
+
+def _request_usage(token):
     req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage")
     req.add_header("Authorization", f"Bearer {token}")
     req.add_header("Accept", "application/json")
@@ -54,6 +70,18 @@ def fetch_usage():
         data = json.loads(resp.read().decode())
     save_cache(data)
     return data
+
+def fetch_usage():
+    token = get_token()
+    try:
+        return _request_usage(token)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # token vaxtı bitmiş ola bilər — bir dəfə yeniləyib yenidən cəhd et
+            _refresh_token()
+            token = get_token()
+            return _request_usage(token)
+        raise
 
 # ── Icon (Cairo PNG) ───────────────────────────────────────────────────────────
 
@@ -262,10 +290,10 @@ class ClaudeIndicator:
                 time_str = f"{mins} dəq {secs} san" if secs else f"{mins} dəq"
                 self.session_item.set_label(f"⏳  Rate limit — {time_str} sonra yenilənəcək  [server: {raw_retry}s]")
             elif e.code == 401:
-                self._next_interval = 300
+                self._next_interval = 120
                 self.session_item.set_label("🔒  Token etibarsızdır — terminalda `claude login` icra et")
             else:
-                self._next_interval = 300
+                self._next_interval = 120
                 self.session_item.set_label(f"HTTP xəta: {e.code}")
         except Exception as e:
             self._next_interval = 120
@@ -279,7 +307,7 @@ class ClaudeIndicator:
         return False
 
     def _manual_refresh(self):
-        self._next_interval = 300
+        self._next_interval = 120
         self.update()
 
     def _auto_update(self):
